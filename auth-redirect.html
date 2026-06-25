@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <title>Signing in...</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #0f172a;
+      --bg-2: #111827;
+      --panel: rgba(15, 23, 42, 0.92);
+      --border: rgba(148, 163, 184, 0.22);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(56, 189, 248, 0.18), transparent 35%),
+        linear-gradient(160deg, var(--bg), var(--bg-2));
+      color: var(--text);
+    }
+
+    .card {
+      width: min(92vw, 360px);
+      padding: 28px 26px;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--panel);
+      box-shadow: 0 24px 80px rgba(15, 23, 42, 0.38);
+      text-align: center;
+    }
+
+    .spinner {
+      width: 42px;
+      height: 42px;
+      margin: 0 auto 16px;
+      border-radius: 50%;
+      border: 3px solid rgba(148, 163, 184, 0.24);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+      line-height: 1.5;
+    }
+
+    .hint {
+      margin-top: 14px;
+      font-size: 0.82rem;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="card" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1 id="title">Sign-in complete</h1>
+    <p id="message">This window will close automatically.</p>
+    <p class="hint">If it stays open, you can close it manually.</p>
+  </main>
+
+  <script>
+    const title = document.getElementById('title');
+    const message = document.getElementById('message');
+
+    function base64UrlDecode(value) {
+      let normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+      const remainder = normalized.length % 4;
+      if (remainder === 2) normalized += '==';
+      else if (remainder === 3) normalized += '=';
+      else if (remainder !== 0) throw new Error('Invalid MSAL state encoding');
+      return atob(normalized);
+    }
+
+    function parseLibraryState(state) {
+      const libraryState = state.split('|', 1)[0];
+      return JSON.parse(base64UrlDecode(libraryState));
+    }
+
+    function parseAuthResponseFromUrl() {
+      const urlHash = window.location.hash;
+      const urlQuery = window.location.search;
+      let hasResponseInHash = false;
+      let hasResponseInQuery = false;
+      let payload = '';
+      let params = null;
+
+      if (urlHash && urlHash.length > 1) {
+        const hashContent = urlHash.charAt(0) === '#' ? urlHash.substring(1) : urlHash;
+        const hashParams = new URLSearchParams(hashContent);
+        if (hashParams.has('state')) {
+          hasResponseInHash = true;
+          payload = hashContent;
+          params = hashParams;
+        }
+      }
+
+      if (urlQuery && urlQuery.length > 1) {
+        const queryContent = urlQuery.charAt(0) === '?' ? urlQuery.substring(1) : urlQuery;
+        const queryParams = new URLSearchParams(queryContent);
+        if (queryParams.has('state')) {
+          hasResponseInQuery = true;
+          payload = queryContent;
+          params = queryParams;
+        }
+      }
+
+      if (hasResponseInHash && hasResponseInQuery) {
+        const queryContent = urlQuery.charAt(0) === '?' ? urlQuery.substring(1) : urlQuery;
+        const hashContent = urlHash.charAt(0) === '#' ? urlHash.substring(1) : urlHash;
+        payload = `${queryContent}${hashContent}`;
+        params = new URLSearchParams(payload);
+      }
+
+      if (!payload || !params) {
+        return null;
+      }
+
+      const state = params.get('state');
+      if (!state) {
+        return null;
+      }
+
+      const libraryState = parseLibraryState(state);
+      if (!libraryState || !libraryState.id || !libraryState.meta) {
+        return null;
+      }
+
+      return { payload, libraryState };
+    }
+
+    function clearAuthResponseFromUrl() {
+      if (window.history && typeof window.history.replaceState === 'function') {
+        window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}`);
+      }
+    }
+
+    function broadcastResponseToMainFrame() {
+      const parsed = parseAuthResponseFromUrl();
+      if (!parsed) {
+        return false;
+      }
+
+      const channel = new BroadcastChannel(parsed.libraryState.id);
+      channel.postMessage({
+        v: 1,
+        payload: parsed.payload,
+      });
+      channel.close();
+      return true;
+    }
+
+    function closeWindow() {
+      if (title) title.textContent = 'Sign-in finished';
+      if (message) message.textContent = 'This window is closing now.';
+
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.focus();
+        }
+      } catch {
+        // Ignore opener access failures.
+      }
+
+      try {
+        window.close();
+      } catch {
+        // Ignore browsers that block scripted closes.
+      }
+    }
+
+    (async () => {
+      let sent = false;
+
+      try {
+        sent = broadcastResponseToMainFrame();
+        clearAuthResponseFromUrl();
+        if (title && sent) title.textContent = 'Sign-in complete';
+        if (message) {
+          message.textContent = sent
+            ? 'This window will close automatically.'
+            : 'You can close this window manually.';
+        }
+      } catch (error) {
+        console.error('Auth redirect handling failed', error);
+        if (title) title.textContent = 'Sign-in finished';
+        if (message) message.textContent = 'You can close this window now.';
+      }
+
+      window.setTimeout(closeWindow, sent ? 250 : 1500);
+    })();
+  </script>
+</body>
+</html>
